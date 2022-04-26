@@ -3,6 +3,7 @@ import pathlib
 import os
 from datetime import datetime
 import numpy as np
+from tqdm import tqdm
 
 from cwvae import build_model
 from data_loader import *
@@ -43,23 +44,22 @@ if __name__ == "__main__":
         type=str,
         help="string of T/Fs per level, e.g. TTF to skip obs at the top level",
     )
-    parser.add_argument(
-        "--no-save-grid",
-        action="store_true",
-        default=False,
-        help="to prevent saving grids of images",
-    )
 
     args = parser.parse_args()
+
+    if args.datadir is None and "DATA_ROOT" in os.environ:
+        args.datadir = os.path.join(os.environ["DATA_ROOT"], "datasets")
 
     assert os.path.exists(args.logdir)
 
     # Set directories.
-    exp_rootdir = str(pathlib.Path(args.logdir).resolve().parent)
-    eval_logdir = os.path.join(
-        exp_rootdir, "eval_{}".format(datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
-    )
-    os.makedirs(eval_logdir, exist_ok=True)
+    args.logdir = pathlib.Path(args.logdir).resolve()
+    exp_rootdir = str(args.logdir.parent)
+
+    # args.logdir format: ..../exp_name/dataset_name/model_desc/model_iter
+    eval_name = f"{args.logdir.parent.parent.parent.stem}-{args.logdir.stem.split('_')[-1]}"
+    eval_logdir = os.path.join(exp_rootdir, eval_name)
+    print(f"Eval directory: {eval_logdir}")
 
     # Load config.
     cfg = tools.read_configs(os.path.join(exp_rootdir, "config.yml"))
@@ -93,10 +93,14 @@ if __name__ == "__main__":
     print("Restoring model from {}".format(args.logdir))
     checkpoint.restore(session, os.path.basename(os.path.normpath(args.logdir)))
 
+    os.makedirs(eval_logdir, exist_ok=False)
+
     # Evaluating.
+    ssim_best = []
+    psnr_best = []
     ssim_all = []
     psnr_all = []
-    for i_ex in range(args.num_examples):
+    for i_ex in tqdm(range(args.num_examples)):
         try:
             gts = np.tile(
                 get_single_batch(val_data_batch, session),
@@ -119,40 +123,25 @@ if __name__ == "__main__":
             order_psnr = np.argsort(np.mean(psnr, -1))
 
             # Setting aside the best metrics among all samples for plotting.
-            ssim_all.append(np.expand_dims(ssim[order_ssim[-1]], 0))
-            psnr_all.append(np.expand_dims(psnr[order_psnr[-1]], 0))
+            ssim_best.append(np.expand_dims(ssim[order_ssim[-1]], 0))
+            psnr_best.append(np.expand_dims(psnr[order_psnr[-1]], 0))
 
-            # Storing gt for prediction and the context.
-            path = os.path.join(eval_logdir, "sample" + str(i_ex) + "_gt/")
-            os.makedirs(path, exist_ok=True)
-            np.savez(path + "gt_ctx.npz", gts[0, : args.open_loop_ctx])
-            np.savez(path + "gt_pred.npz", gts[0, args.open_loop_ctx :])
-            if not args.no_save_grid:
-                tools.save_as_grid(gts[0, : args.open_loop_ctx], path, "gt_ctx.png")
-                tools.save_as_grid(gts[0, args.open_loop_ctx :], path, "gt_pred.png")
+            ssim_all.append(ssim)
+            psnr_all.append(psnr)
 
-            # Storing best and random samples.
-            path = os.path.join(eval_logdir, "sample" + str(i_ex) + "/")
-            os.makedirs(path, exist_ok=True)
-            np.savez(path + "random_sample_1.npz", preds[0])
-            if args.num_samples > 1:
-                np.savez(path + "best_ssim_sample.npz", preds[order_ssim[-1]])
-                np.savez(path + "best_psnr_sample.npz", preds[order_psnr[-1]])
-                np.savez(path + "random_sample_2.npz", preds[1])
-            if not args.no_save_grid:
-                tools.save_as_grid(preds[0], path, "random_sample_1.png")
-                if args.num_samples > 1:
-                    tools.save_as_grid(
-                        preds[order_ssim[-1]], path, "best_ssim_sample.png"
-                    )
-                    tools.save_as_grid(
-                        preds[order_psnr[-1]], path, "best_psnr_sample.png"
-                    )
-                    tools.save_as_grid(preds[1], path, "random_sample_2.png")
+            for i_smp, pred in enumerate(preds):
+                gt = gts[0].transpose([0, 3, 1, 2])
+                pred = pred.transpose([0, 3, 1, 2])
+                sample = np.concatenate([gt[:args.open_loop_ctx], pred])
+                np.save(os.path.join(eval_logdir, f"sample_{i_ex:04d}-{i_smp}.npy"), sample)
 
         except tf.errors.OutOfRangeError:
             break
 
+    psnr_all = np.stack(psnr_all)
+    ssim_all = np.stack(ssim_all)
+    np.save(os.path.join(eval_logdir, "psnr.npy"), psnr_all)
+    np.save(os.path.join(eval_logdir, "ssim.npy"), ssim_all)
     # Plotting.
-    tools.plot_metrics(ssim_all, eval_logdir, "ssim")
-    tools.plot_metrics(psnr_all, eval_logdir, "psnr")
+    tools.plot_metrics(ssim_best, eval_logdir, "ssim")
+    tools.plot_metrics(psnr_best, eval_logdir, "psnr")
