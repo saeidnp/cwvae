@@ -10,6 +10,9 @@ from loggers.summary import Summary
 from loggers.checkpoint import Checkpoint
 from data_loader import *
 import tools
+import wandb
+import shutil
+import time
 
 
 def train_setup(cfg, loss):
@@ -72,9 +75,27 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    copy_datasets = False
+    if args.datadir is None and "DATA_ROOT" in os.environ:
+        copy_datasets = True
+        args.datadir = os.path.join(os.environ["DATA_ROOT"], "datasets")
+    print("***", args.datadir)
+
     cfg = tools.read_configs(
         args.config, args.base_config, datadir=args.datadir, logdir=args.logdir
     )
+
+    if copy_datasets:
+        if cfg.dataset == "minerl":
+            src = "datasets/minerl_navigate"
+            dst = os.path.join(cfg.datadir, "minerl_navigate")
+        elif cfg.dataset == "mazes":
+            src = "datasets/gqn_mazes"
+            dst = os.path.join(cfg.datadir, "gqn_mazes")
+        if not os.path.exists(dst):
+            print(f"Copying the dataset from {src} to {dst}")
+            shutil.copytree(src, dst)
+            print("Copying done.")
 
     # Creating model dir with experiment name.
     exp_rootdir = os.path.join(cfg.logdir, cfg.dataset, tools.exp_name(cfg))
@@ -84,6 +105,13 @@ if __name__ == "__main__":
     print(cfg)
     with open(os.path.join(exp_rootdir, "config.yml"), "w") as f:
         yaml.dump(dict(cfg), f, default_flow_style=False)
+    # wandb.tensorboard.patch(root_logdir=exp_rootdir)
+    wandb.init(entity=os.environ["WANDB_ENTITY"],
+                project=os.environ["WANDB_PROJECT"],
+                config=cfg,
+                sync_tensorboard=True,
+                tags=["cwvae"])
+    print("wandb run id:", wandb.run.id)
 
     # Load dataset.
     train_data_batch, val_data_batch = load_dataset(cfg)
@@ -115,9 +143,11 @@ if __name__ == "__main__":
     print("Getting validation batches.")
     val_batches = get_multiple_batches(val_data_batch, cfg.num_val_batches, session)
     print("Training.")
+    t_0 = time.time()
     while True:
         try:
             train_batch = get_single_batch(train_data_batch, session)
+            print(f"Step: {step()}, {(time.time() - t_0) / (step() + 1):.2f} s/step")
             feed_dict_train = {model_components["training"]["obs"]: train_batch}
             feed_dict_val = {model_components["training"]["obs"]: val_batches}
 
@@ -152,3 +182,4 @@ if __name__ == "__main__":
             break
 
     print("Training complete.")
+    wandb.finish()
