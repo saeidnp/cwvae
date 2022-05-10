@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 import numpy as np
 from tqdm import tqdm
+import shutil
 
 from cwvae import build_model
 from data_loader import *
@@ -47,8 +48,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    copy_datasets = False
     if args.datadir is None and "DATA_ROOT" in os.environ:
+        copy_datasets = True
         args.datadir = os.path.join(os.environ["DATA_ROOT"], "datasets")
+    assert args.datadir is not None
+    print("***", args.datadir)
 
     assert os.path.exists(args.logdir)
 
@@ -76,6 +81,18 @@ if __name__ == "__main__":
     else:
         cfg.use_obs = True
     tools.validate_config(cfg)
+
+    if copy_datasets:
+        if cfg.dataset == "minerl":
+            src = "datasets/minerl_navigate"
+            dst = os.path.join(cfg.datadir, "minerl_navigate")
+        elif cfg.dataset == "mazes":
+            src = "datasets/gqn_mazes"
+            dst = os.path.join(cfg.datadir, "gqn_mazes")
+        if not os.path.exists(dst):
+            print(f"Copying the dataset from {src} to {dst}")
+            shutil.copytree(src, dst)
+            print("Copying done.")
 
     # Load dataset.
     _, val_data_batch = load_dataset(cfg)
